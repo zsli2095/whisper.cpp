@@ -645,6 +645,47 @@ bool vad_simple(std::vector<float> & pcmf32, int sample_rate, int last_ms, float
     return true;
 }
 
+bool vad_simple_detect_start(std::vector<float> & pcmf32, int sample_rate, int last_ms, float vad_thold, float freq_thold, bool verbose) {
+    const int n_samples      = pcmf32.size();
+    const int n_samples_last = (sample_rate * last_ms) / 1000;
+
+    if (n_samples_last >= n_samples) {
+        // not enough samples - assume no speech
+        return false;
+    }
+
+    if (freq_thold > 0.0f) {
+        high_pass_filter(pcmf32, freq_thold, sample_rate);
+    }
+
+    float energy_all  = 0.0f;
+    float energy_last = 0.0f;
+
+    for (int i = 0; i < n_samples; i++) {
+        energy_all += fabsf(pcmf32[i]);
+
+        if (i >= n_samples - n_samples_last) {
+            energy_last += fabsf(pcmf32[i]);
+        }
+    }
+
+    energy_all  /= n_samples;
+    energy_last /= n_samples_last;
+
+    if (verbose) {
+        auto t_et = static_cast<int64_t> (std::time(nullptr)); //epoch time
+        fprintf(stderr, "%s: energy_all: %f, energy_last: %f %lld\n", __func__, energy_all*1e4, energy_last*1e4, t_et);
+    }
+
+    vad_thold=1/1.5;
+    if (energy_last > (1./vad_thold)*energy_all) {
+        return true;
+    }
+
+    return false;
+}
+
+
 float similarity(const std::string & s0, const std::string & s1) {
     const size_t len0 = s0.size() + 1;
     const size_t len1 = s1.size() + 1;

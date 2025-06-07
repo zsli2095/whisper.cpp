@@ -13,6 +13,12 @@
 #include <string>
 #include <thread>
 #include <vector>
+#include <cstring>
+#include <fstream>
+#include <iostream>
+#include <ctime>
+#include <cmath>
+#include <zmq.hpp>
 
 // command-line parameters
 struct whisper_params {
@@ -114,6 +120,16 @@ void whisper_print_usage(int /*argc*/, char ** argv, const whisper_params & para
     fprintf(stderr, "  -fa,      --flash-attn    [%-7s] flash attention during inference\n",               params.flash_attn ? "true" : "false");
     fprintf(stderr, "\n");
 }
+
+double get_epoch_time_1_decimal(){
+    using namespace std::chrono;
+    auto now = system_clock::now();
+    double epoch = duration<double>(now.time_since_epoch()).count();
+    epoch = std::round(epoch*10.0f)/10.0f;
+    printf("%lf=\n", epoch);
+    return epoch; 
+}
+
 
 int main(int argc, char ** argv) {
     ggml_backend_load_all();
@@ -227,8 +243,24 @@ int main(int argc, char ** argv) {
     printf("[Start speaking]\n");
     fflush(stdout);
 
+    //--------------------------
+    zmq::context_t context (1);
+    zmq::socket_t publisher (context, zmq::socket_type::pub);
+    //publisher.bind("tcp://*:5556");
+    publisher.bind("ipc:///tmp/whisper_asr.ipc");
+    //--------------------------
+
+
     auto t_last  = std::chrono::high_resolution_clock::now();
     const auto t_start = t_last;
+
+    //auto t_last_et = static_cast<int64_t> (std::time(nullptr)); //epoch time
+    double t_last_et = get_epoch_time_1_decimal();
+
+    //auto t_vad_start_et = static_cast<int64_t> (std::time(nullptr)); //epoch time
+    double t_vad_start_et = get_epoch_time_1_decimal();
+    //printf("%lf~\n", t_vad_start_et);
+    int state=0;  //0 silence, 1, started talking 
 
     // main audio loop
     while (is_running) {
@@ -284,26 +316,56 @@ int main(int argc, char ** argv) {
 
             pcmf32_old = pcmf32;
         } else {
+            //using VAD
+            int stride_ms = 500; //do not run VAD more frequent than this delta in time, in ms.
+            int vad_freq_in_ms = 100;
+            int vad_buffer_ms = 1000;
+            int vad_buffer_last_ms = 500;
+            
             const auto t_now  = std::chrono::high_resolution_clock::now();
             const auto t_diff = std::chrono::duration_cast<std::chrono::milliseconds>(t_now - t_last).count();
 
-            if (t_diff < 2000) {
-                std::this_thread::sleep_for(std::chrono::milliseconds(100));
-
+            if (t_diff < stride_ms){
+                std::this_thread::sleep_for(std::chrono::milliseconds(vad_freq_in_ms));
                 continue;
             }
 
-            audio.get(2000, pcmf32_new);
+            audio.get(vad_buffer_ms, pcmf32_new); //get last num ms for VAD detection
+            
+            if (state==0){
+                auto vad_start = ::vad_simple_detect_start(pcmf32_new, WHISPER_SAMPLE_RATE, vad_buffer_last_ms, 
+                                                    params.vad_thold, params.freq_thold, false);
+                if (vad_start){
+                    //t_vad_start_et = static_cast<int64_t> (std::time(nullptr)); //epoch time
+                    t_vad_start_et = get_epoch_time_1_decimal();
+                    state=1;
+                    printf("state 0 -> 1\n");
+                }else{
+                    //printf("state 0 -> 0\n");
+                }
+    
 
-            if (::vad_simple(pcmf32_new, WHISPER_SAMPLE_RATE, 1000, params.vad_thold, params.freq_thold, false)) {
-                audio.get(params.length_ms, pcmf32);
-            } else {
-                std::this_thread::sleep_for(std::chrono::milliseconds(100));
-
+                std::this_thread::sleep_for(std::chrono::milliseconds(vad_freq_in_ms));
                 continue;
+
+            }else if (state==1){
+
+                if (::vad_simple(pcmf32_new, WHISPER_SAMPLE_RATE, vad_buffer_last_ms, 
+                                    params.vad_thold, params.freq_thold, false)) {
+                    audio.get(params.length_ms, pcmf32);
+                    audio.clear();
+                    state=0;
+                    printf("state 1 -> 0\n");
+                } else {
+                    //printf("state 1 -> 1\n");
+                    std::this_thread::sleep_for(std::chrono::milliseconds(vad_freq_in_ms));
+                    continue;
+                }
             }
 
             t_last = t_now;
+            //t_last_et = static_cast<int64_t> (std::time(nullptr));
+            t_last_et = get_epoch_time_1_decimal();
         }
 
         // run the inference
@@ -331,11 +393,17 @@ int main(int argc, char ** argv) {
 
             wparams.prompt_tokens    = params.no_context ? nullptr : prompt_tokens.data();
             wparams.prompt_n_tokens  = params.no_context ? 0       : prompt_tokens.size();
+            
+            //hack
+            //wparams.single_segment = true; This might make sense to keep all decoded speech in 1 segment
 
             if (whisper_full(ctx, wparams, pcmf32.data(), pcmf32.size()) != 0) {
                 fprintf(stderr, "%s: failed to process audio\n", argv[0]);
                 return 6;
             }
+
+            std::ostringstream oss;
+            oss << "10001";
 
             // print result;
             {
@@ -359,6 +427,7 @@ int main(int argc, char ** argv) {
                 for (int i = 0; i < n_segments; ++i) {
                     const char * text = whisper_full_get_segment_text(ctx, i);
 
+                    oss << "@@";
                     if (params.no_timestamps) {
                         printf("%s", text);
                         fflush(stdout);
@@ -375,11 +444,19 @@ int main(int argc, char ** argv) {
                         if (whisper_full_get_segment_speaker_turn_next(ctx, i)) {
                             output += " [SPEAKER_TURN]";
                         }
-
+                        //const int64_t segment_start_et = std::max(0.0, double(t_last_et) - pcmf32.size()/WHISPER_SAMPLE_RATE);
+                        //const int64_t segment_start_et = t_vad_start_et;
+                        const auto segment_start_et = t_vad_start_et;
+                        //std::time_t result = std::time(nullptr);
+                        //output = std::to_string(result) + " | " + output;
+                        output = std::to_string(segment_start_et) + ", " + std::to_string(t_last_et) + " | " + output;
+                        //output += "\n" + std::to_string(t_vad_start_et);
                         output += "\n";
 
                         printf("%s", output.c_str());
                         fflush(stdout);
+                        
+                        oss << std::to_string(segment_start_et) << "," << std::to_string(t_last_et) << " " << text;
 
                         if (params.fname_out.length() > 0) {
                             fout << output;
@@ -396,6 +473,15 @@ int main(int argc, char ** argv) {
                     printf("### Transcription %d END\n", n_iter);
                 }
             }
+
+            // publish results via zmq
+            std::string tosendstr = oss.str(); 
+            const char * tosend = tosendstr.c_str();
+
+            int BUFSZ = strlen(tosend)+1;
+            zmq::message_t message(BUFSZ);
+            snprintf( (char *) message.data(), BUFSZ, "%s", oss.str().c_str());
+            publisher.send(message, zmq::send_flags::none);
 
             ++n_iter;
 
@@ -419,7 +505,7 @@ int main(int argc, char ** argv) {
                 }
             }
             fflush(stdout);
-        }
+        } //finished inference
     }
 
     audio.pause();

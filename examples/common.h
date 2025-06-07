@@ -248,6 +248,14 @@ bool vad_simple(
         float freq_thold,
         bool  verbose);
 
+bool vad_simple_detect_start(
+        std::vector<float> & pcmf32,
+        int   sample_rate,
+        int   last_ms,
+        float vad_thold,
+        float freq_thold,
+        bool  verbose);
+
 // compute similarity between two strings using Levenshtein distance
 float similarity(const std::string & s0, const std::string & s1);
 

@@ -9,6 +9,8 @@
 #include <locale>
 #include <regex>
 #include <sstream>
+#include <algorithm>
+#include <chrono>
 
 // Function to check if the next argument exists
 static std::string get_next_arg(int& i, int argc, char** argv, const std::string& flag, gpt_params& params) {
@@ -649,6 +651,8 @@ bool vad_simple_detect_start(std::vector<float> & pcmf32, int sample_rate, int l
     const int n_samples      = pcmf32.size();
     const int n_samples_last = (sample_rate * last_ms) / 1000;
 
+    //printf("here, last_ms:%d, %d\n\n", last_ms, n_samples_last);
+
     if (n_samples_last >= n_samples) {
         // not enough samples - assume no speech
         return false;
@@ -682,6 +686,7 @@ bool vad_simple_detect_start(std::vector<float> & pcmf32, int sample_rate, int l
         return true;
     }
 
+    //printf("here, el%f, ea%f\n\n", energy_last, energy_all);
     return false;
 }
 
@@ -713,4 +718,170 @@ float similarity(const std::string & s0, const std::string & s1) {
 bool is_file_exist(const char * filename) {
     std::ifstream infile(filename);
     return infile.good();
+}
+
+
+float sigmoid(float x, float temp=1.0f ){
+    return 1.0f / (1.0f + std::exp(-x*temp));
+}
+
+// important to keep time in double precision
+double get_epoch_time_1_decimal(){
+    auto now = std::chrono::system_clock::now();
+    double epoch = std::chrono::duration<double>(now.time_since_epoch()).count();
+    epoch = std::round(epoch*10.0f)/10.0f;
+    //printf("%lf=\n", epoch);
+    return epoch; 
+}
+
+// important to keep time in double precision
+double get_epoch_time_ms(){
+    auto now = std::chrono::system_clock::now();
+    double epoch = std::chrono::duration<double>(now.time_since_epoch()).count();
+    return std::round(epoch*1000.0f);
+}
+
+
+VadOnline::VadOnline(float sample_rate, 
+                     float momen,
+                     float energy_no,
+                     float energy_yes,
+                     float freq_thold,
+                     float temperature){
+    
+    m_sample_rate = sample_rate;
+    //m_thresh = thresh;
+    m_momen = momen;
+    m_freq_thold = freq_thold;
+
+    m_energy_avg = 0.0f;
+    m_prob = 0.5f; //probability that we have activity
+    m_state = 0;
+    m_state_prev = 0;
+    m_last_inference_et = 0.0f;
+    m_state_yes_to_no = false;
+
+    m_temp = temperature;
+
+    //m_energy_no = 0.02f; //average energy for the no activity class
+    //m_energy_yes = 0.5f; //average energy for the activity class
+
+    //m_energy_no = energy_no; //average energy for the no activity class
+    //m_energy_yes = energy_yes; //average energy for the activity class
+    m_interval_to_run_inf_when_speaking = 0.5;
+    m_interval_to_continue_inf = 1.0;
+
+    float hysteresis_frac = 0.1f;  //fraction between the two class means in log space as hysteresis
+
+    float diff_log = std::log(energy_yes/energy_no);
+    m_thresh_no2yes = std::log(energy_no) + (0.5+hysteresis_frac)*diff_log;
+    m_thresh_yes2no = std::log(energy_no) + (0.5-hysteresis_frac)*diff_log;
+
+    printf("*** %.3f %.3f %.3f ***\n", diff_log, m_thresh_no2yes, m_thresh_yes2no);
+
+}
+
+void VadOnline::update(const std::vector<float> &pcmf32, bool verbose=false ){
+    std::vector<float> data = pcmf32; //copies it
+    const int n_samples  = data.size();
+    if (n_samples == 0){
+        printf("No samples!\n");
+        return;
+    }
+
+    if (m_freq_thold > 0.0f) {
+        high_pass_filter(data, m_freq_thold, m_sample_rate);
+    }
+
+    float energy_all  = 0.0f;
+    for (int i = 0; i < n_samples; i++) {
+        energy_all += fabsf(data[i]);
+    }
+    energy_all = energy_all*1000/n_samples; //average energy
+
+    float momen;
+
+    //momen = m_momen*m_prob; //when not in voice activity, lower the momentum.
+    momen = m_momen;
+
+    m_energy_avg = m_energy_avg*momen + energy_all*(1-momen);
+
+    m_prob = this->activ_prob(); //update the current estimate of voice activity probability
+
+    // implemnt a little bit of hysteresis
+    float pr_high = 0.5;
+    float pr_low = 0.5;
+
+    m_state_yes_to_no = false;
+
+    int old_m_state = m_state;
+    if (m_state == 0 && m_prob > pr_high){
+        m_state = 1;
+        m_last_no2yes_et = get_epoch_time_1_decimal();
+    }else if (m_state == 1 && m_prob < pr_low){
+        m_state = 0;
+        m_last_yes2no_et = get_epoch_time_1_decimal();
+        //printf("\n\nvadyes2no:%.1f\n\n", m_last_yes2no_et );
+        m_state_yes_to_no = true;
+    }
+
+    if (verbose) {
+        printf("\33[2K\r");
+        // print long empty line to clear the previous line
+        //printf("%s", std::string(100, ' ').c_str());
+        //printf("\33[2K\r");
+        printf("samples:%d energy:%.3f,%.3f, energy_thresh:(%.2f %.2f), momen:%.2f pr:%.2f state:%d->%d", 
+                n_samples, energy_all, m_energy_avg, m_thresh_no2yes, m_thresh_yes2no, momen, m_prob, m_state_prev, m_state); 
+        fflush(stdout);
+    }
+    m_state_prev = old_m_state;
+}
+
+
+float VadOnline::activ_prob(){
+    //return sigmoid( std::log(m_energy_avg_short/m_energy_avg_long), m_temp); 
+    //return sigmoid( m_energy_avg_short - m_thresh, m_temp); 
+    //return sigmoid(std::log(m_energy_avg/m_thresh), m_temp); 
+    //return sigmoid(m_energy_avg - m_thresh, m_temp); 
+
+    if (m_state==0) //no activity state
+        return sigmoid( (std::log(m_energy_avg) - (m_thresh_no2yes)), m_temp);
+    else //acdtivity state
+        return sigmoid( (std::log(m_energy_avg) - (m_thresh_yes2no)), m_temp);
+
+}
+
+//should we run inference at this point?
+bool VadOnline::run_inf(){
+
+    double now = get_epoch_time_1_decimal();
+
+    if (m_state_prev == 1){
+        //printf("~~ %.1f %.1f ~~\n", now, m_last_inference_et );
+        if (m_state==1){ 
+            //if we are already 'yes', then we will only run inference if we are 500ms from last inf time
+            if ( (now - m_last_inference_et) > m_interval_to_run_inf_when_speaking){
+                m_last_inference_et = now;
+                return true;
+            }else{
+                //printf("## %.1lf %.1lf ##\n", now, m_last_inference_et );
+                // too quick, don't run inf now
+            }
+
+        }else{
+            //if we just transistioned from state of 1 -> 0, run another inference immediately.
+            m_last_inference_et = now;
+            return true;
+        }
+    }else{
+
+        // if we are close from the state transisition, still keep sending for 500ms
+        if ( (now - m_last_yes2no_et) < m_interval_to_continue_inf){
+            if ( (now - m_last_inference_et) > m_interval_to_run_inf_when_speaking){
+                m_last_inference_et = now;
+                return true;
+            }
+        }
+    }
+    return false;
 }

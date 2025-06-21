@@ -328,3 +328,41 @@ const std::vector<std::string> k_styles = {
 
 // check if file exists using ifstream
 bool is_file_exist(const char * filename);
+
+
+double get_epoch_time_1_decimal();
+double get_epoch_time_ms();
+
+
+class VadOnline
+{
+public:
+    VadOnline(float, float, float, float, float, float);
+    void update(const std::vector<float> &pcmf32, bool verbose);
+    float activ_prob();
+    bool run_inf();
+
+    float m_energy_avg;
+
+    float m_freq_thold;
+    float m_sample_rate;
+    float m_momen;
+    float m_temp;
+    //float m_thresh;
+    int   m_state; // 0 for no activity, 1 for activity
+    int   m_state_prev; // 0 for no activity, 1 for activity
+    float m_prob;
+    double m_last_inference_et;
+
+    double m_last_no2yes_et; // epoch time when activity went from no to yes
+    double m_last_yes2no_et; // epoch time when activity went from yes to no
+
+    bool m_state_yes_to_no;
+
+    float m_thresh_no2yes;
+    float m_thresh_yes2no;
+
+    double m_interval_to_run_inf_when_speaking; // in seconds
+    double m_interval_to_continue_inf; 
+    //after yes2no event, how many seconds more do we run inference
+};

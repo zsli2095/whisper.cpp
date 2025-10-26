@@ -768,8 +768,10 @@ VadOnline::VadOnline(float sample_rate,
 
     //m_energy_no = energy_no; //average energy for the no activity class
     //m_energy_yes = energy_yes; //average energy for the activity class
-    m_interval_to_run_inf_when_speaking = 0.5;
-    m_interval_to_continue_inf = 1.0;
+    m_interval_to_run_inf_when_speaking = 0.5; //0.5
+
+    m_interval_to_run_after_speaking = 0.2;  //0.3
+    m_interval_to_continue_inf = 0.8;  //1.5
 
     float hysteresis_frac = 0.1f;  //fraction between the two class means in log space as hysteresis
 
@@ -877,7 +879,7 @@ bool VadOnline::run_inf(){
 
         // if we are close from the state transisition, still keep sending for 500ms
         if ( (now - m_last_yes2no_et) < m_interval_to_continue_inf){
-            if ( (now - m_last_inference_et) > m_interval_to_run_inf_when_speaking){
+            if ( (now - m_last_inference_et) > m_interval_to_run_after_speaking){
                 m_last_inference_et = now;
                 return true;
             }

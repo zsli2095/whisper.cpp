@@ -3,9 +3,14 @@ project("whisper.cpp" C CXX)
 project("whisper.cpp" VERSION 1.7.5)
 
 # for seqAn3
-#set(CMAKE_CXX_STANDARD 23)
-#set(CMAKE_CXX_STANDARD_REQUIRED ON)
-#set(CMAKE_CXX_EXTENSIONS OFF)
+# set(CMAKE_CXX_STANDARD 20)
+# set(CMAKE_CXX_STANDARD_REQUIRED ON)
+# set(CMAKE_CXX_EXTENSIONS OFF)
+
+# for base64.hpp, below 3 lines extra
+set(CMAKE_CXX_STANDARD 20)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_CXX_EXTENSIONS OFF)
 
 include(CheckIncludeFileCXX)
 
@@ -249,6 +254,7 @@ if (MSVC)
         disable_msvc_warnings(whisper-cli)
         disable_msvc_warnings(whisper-server)
         disable_msvc_warnings(whisper-stream)
+        disable_msvc_warnings(whisper-stream2)
         disable_msvc_warnings(whisper-talk-llama)
         disable_msvc_warnings(whisper-bench)
         disable_msvc_warnings(quantize)

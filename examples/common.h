@@ -365,4 +365,5 @@ public:
     double m_interval_to_run_inf_when_speaking; // in seconds
     double m_interval_to_continue_inf; 
     //after yes2no event, how many seconds more do we run inference
+    double m_interval_to_run_after_speaking;
 };
